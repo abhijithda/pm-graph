@@ -1,6 +1,6 @@
 // Copyright (c) 2023 Veritas Technologies LLC. All rights reserved. IP63-2828-7171-04-15-9
 
-// Package pg (plugin graph) is used for generating the graph image.
+// Package pm graph is used for generating the graph image.
 package pg
 
 import (
@@ -8,54 +8,58 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/VeritasOS/plugin-manager/config"
 	"github.com/VeritasOS/plugin-manager/pluginmanager"
-	osutils "github.com/VeritasOS/plugin-manager/utils/os"
+	logutil "github.com/VeritasOS/plugin-manager/utils/log"
+	graphviz "github.com/goccy/go-graphviz"
+	"github.com/goccy/go-graphviz/cgraph"
 )
 
-// graph of plugin and its dependencies.
-type graph struct {
+// myGraph of plugin and its dependencies.
+type myGraph struct {
 	// fileNoExt is the name of the graph artifacts without extension.
 	// 	Extensions could be added to generate input `.dot` file or output
 	// 	`.svg` images.
 	fileNoExt string
-	// subgraph contains subgraph name (i.e., cluster name) and its contents.
-	//  I.e., each subgraph name is the key, and their contents would be in
-	// 	an array.
-	subgraph sync.Map
 }
 
-var g graph
-var dotCmdPresent = true
+var mg myGraph
 
-// initGraphConfig: Initialize graph configurations
 func initGraphConfig(imgNamePrefix string) {
 	// Initialization should be done only once.
-	if g.fileNoExt == "" {
-		g.fileNoExt = imgNamePrefix + "." + time.Now().Format(time.RFC3339Nano)
+	if mg.fileNoExt == "" {
+		mg.fileNoExt = imgNamePrefix + "." + time.Now().Format(time.RFC3339Nano)
 	}
 }
 
-// GetImagePath returns the SVG image location.
-func GetImagePath() string {
-	return g.fileNoExt + ".svg"
+func getImagePath() string {
+	return config.GetPMLogDir() + mg.fileNoExt + ".svg"
 }
 
-func getDotFilePath() string {
-	return g.fileNoExt + ".dot"
+var gv = graphviz.New()
+var graph1 *cgraph.Graph
+
+// resetGraph is mainly used for unit testing.
+func resetGraph() {
+	graph1 = nil
 }
 
 // InitGraph initliazes the graph data structure and invokes generateGraph.
 func InitGraph(pluginType string, pluginsInfo map[string]*pluginmanager.PluginAttributes) error {
-	initGraphConfig(config.GetPMLogDir() + config.GetPMLogFile())
+	initGraphConfig(config.GetPMLogFile())
 
-	// DOT guide: https://graphviz.gitlab.io/_pages/pdf/dotguide.pdf
+	var err error
+	if graph1 == nil {
+		graph1, err = gv.Graph()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 
+	sb := graph1.SubGraph(pluginType, 1)
+	sb.SetLabel(pluginType)
 	// INFO: Sort the plugins so that list of dependencies generated
 	// (used by documentation) doesn't change.
 	// NOTE: If not sorted, then even without addition of any new plugin,
@@ -67,118 +71,54 @@ func InitGraph(pluginType string, pluginsInfo map[string]*pluginmanager.PluginAt
 	}
 	sort.Strings(orderedPluginsList)
 	for _, p := range orderedPluginsList {
-		pFileString := "\"" + p + "\""
+		pluginNode, err := sb.CreateNode(p)
+		if err != nil {
+			log.Printf("SubGraph.CreateNode(%s) Error: %s", p, err.Error())
+			continue
+		}
+
 		absLogPath, _ := filepath.Abs(config.GetPMLogDir())
 		absLibraryPath, _ := filepath.Abs(config.GetPluginsLibrary())
 		relPath, _ := filepath.Rel(absLogPath, absLibraryPath)
-		pURL := "\"" + filepath.FromSlash(relPath+string(os.PathSeparator)+p) + "\""
-		rows := []string{}
-		rowsInterface, ok := g.subgraph.Load(pluginType)
-		if ok {
-			rows = rowsInterface.([]string)
-		}
-		rows = append(rows, pFileString+" [label=\""+
-			strings.Replace(pluginsInfo[p].Description, "\"", `\"`, -1)+
-			"\",style=filled,fillcolor=lightgrey,URL="+pURL+"]")
-		rows = append(rows, "\""+p+"\"")
-		rbyLen := len(pluginsInfo[p].RequiredBy)
-		if rbyLen != 0 {
-			graphRow := "\"" + p + "\" -> "
-			for rby := range pluginsInfo[p].RequiredBy {
-				graphRow += "\"" + pluginsInfo[p].RequiredBy[rby] + "\""
-				if rby != rbyLen-1 {
-					graphRow += ", "
-				}
+		pURL := filepath.FromSlash(relPath + string(os.PathSeparator) + p)
+		pluginNode.SetLabel(pluginsInfo[p].Description)
+		pluginNode.SetURL(pURL)
+		pluginNode.SetStyle(cgraph.FilledNodeStyle)
+		pluginNode.SetFillColor("lightgrey")
+
+		for rby := range pluginsInfo[p].RequiredBy {
+			reqbyNode, err := sb.CreateNode(pluginsInfo[p].RequiredBy[rby])
+			if err != nil {
+				log.Printf("SubGraph.CreateNode(%s) Error: %s", pluginsInfo[p].RequiredBy[rby], err.Error())
+				continue
 			}
-			rows = append(rows, graphRow)
+			sb.CreateEdge("RequiredBy", pluginNode, reqbyNode)
 		}
-		rsLen := len(pluginsInfo[p].Requires)
-		if rsLen != 0 {
-			graphRow := ""
-			for rs := range pluginsInfo[p].Requires {
-				graphRow += "\"" + pluginsInfo[p].Requires[rs] + "\""
-				if rs != rsLen-1 {
-					graphRow += ", "
-				}
+		for rs := range pluginsInfo[p].Requires {
+			rsNode, err := sb.CreateNode(pluginsInfo[p].Requires[rs])
+			if err != nil {
+				log.Printf("SubGraph.CreateNode(%s) Error: %s", pluginsInfo[p].Requires[rs], err.Error())
+				continue
 			}
-			graphRow += " -> \"" + p + "\""
-			rows = append(rows, graphRow)
+			sb.CreateEdge("Requires", pluginNode, rsNode)
 		}
-		g.subgraph.Store(pluginType, rows)
 	}
 
-	return GenerateGraph()
+	return GenerateGraph(graph1)
 }
 
 // GenerateGraph generates an input `.dot` file based on the fileNoExt name,
 // and then generates an `.svg` image output file as fileNoExt.svg.
-func GenerateGraph( /*dotFile, svgFile string*/ ) error {
-	dotFile := getDotFilePath()
-	svgFile := GetImagePath()
+func GenerateGraph(g *cgraph.Graph) error {
+	svgFile := getImagePath()
 
-	fhDigraph, openerr := osutils.OsOpenFile(dotFile, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
-	if openerr != nil {
-		abspath, _ := filepath.Abs(dotFile)
-		log.Printf("OsOpenFile(%s) Abs path: %v, Error: %s",
-			dotFile, abspath, openerr.Error())
-		return openerr
-	}
-	defer fhDigraph.Close()
-	clusterCnt := 0
-	graphContent := "digraph {\n"
-	g.subgraph.Range(func(name interface{}, rows interface{}) bool {
-		graphContent += "\nsubgraph cluster_" + strconv.Itoa(clusterCnt) + " {\n" +
-			"label=\"" + name.(string) + " plugins\"\nlabelloc=t\nfontsize=24\n" +
-			"node [shape=polygon,sides=6,style=filled,fillcolor=red]\n" +
-			strings.Join(rows.([]string), "\n") + "\n}\n"
-		clusterCnt++
-		return true
-	})
-	graphContent += "\n}\n"
-
-	_, writeerr := fhDigraph.WriteString(graphContent)
-	if writeerr != nil {
-		log.Printf("fhDigraph.WriteString(%s) Err: %s", graphContent, writeerr.Error())
-		return writeerr
+	rendererr := gv.RenderFilename(g, graphviz.SVG, svgFile)
+	if rendererr != nil {
+		log.Printf("gv.RenderFilename() Err: %s", rendererr.Error())
+		return rendererr
 	}
 
-	// https://graphviz.gitlab.io/_pages/doc/info/command.html
-	cmdStr := "dot"
-	// If cmdStr is not installed on system, then just return.
-	if !dotCmdPresent {
-		return nil
-	}
-	cmdParams := []string{"-Tsvg", dotFile, "-o", svgFile}
-
-	cmd := osutils.ExecCommand(os.ExpandEnv(cmdStr), cmdParams...)
-	stdOutErr, err := cmd.CombinedOutput()
-	if err != nil {
-		if strings.Contains(err.Error(), "executable file not found in $PATH") {
-			dotCmdPresent = false
-			return nil
-		}
-		log.Printf("osutils.ExecCommand(%v, %v) Error: %s", cmd, cmdParams, err.Error())
-	}
-	if len(stdOutErr) != 0 {
-		log.Println("Stdout & Stderr:", string(stdOutErr))
-	}
-
-	return err
-}
-
-// UpdateGraph updates the plugin node with the status and url.
-func UpdateGraph(subgraphName, plugin, status, url string) error {
-	ncolor := getStatusColor(status)
-	gContents := []string{}
-	gContentsInterface, ok := g.subgraph.Load(subgraphName)
-	if ok {
-		gContents = gContentsInterface.([]string)
-	}
-	gContents = append(gContents,
-		"\""+plugin+"\" [style=filled,fillcolor="+ncolor+",URL=\""+url+"\"]")
-	g.subgraph.Store(subgraphName, gContents)
-
-	return GenerateGraph()
+	return nil
 }
 
 // getStatusColor returns the color for a given result status.
@@ -193,4 +133,38 @@ func getStatusColor(status string) string {
 		ncolor = "yellow"
 	}
 	return ncolor
+}
+
+// UpdateGraph updates the plugin node with the status and url.
+func UpdateGraph(subgraphName, plugin, status, url string) error {
+	sb := graph1.SubGraph(subgraphName, 0)
+	if sb == nil {
+		err := logutil.PrintNLogError("Graph.SubGraph(%s, 0) returns nil. Error: Subgraph not found!", subgraphName)
+		return err
+	}
+
+	node, err := sb.Node(plugin)
+	if err != nil {
+		err := logutil.PrintNLogError("Graph.Node(%s) Error: %s",
+			plugin, err.Error())
+		return err
+	}
+	node.SetStyle("filled")
+	node.SetFillColor(getStatusColor(status))
+	node.SetURL(url)
+
+	svgFile := getImagePath()
+
+	// var buf bytes.Buffer
+	// if err := gv.Render(graph1, "dot", &buf); err != nil {
+	// 	log.Fatal(err)
+	// }
+	// fmt.Println(buf.String())
+
+	rendererr := gv.RenderFilename(graph1, graphviz.SVG, svgFile)
+	if rendererr != nil {
+		log.Printf("gv.RenderFilename() Err: %s", rendererr.Error())
+		return rendererr
+	}
+	return nil
 }
