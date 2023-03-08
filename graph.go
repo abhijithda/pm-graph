@@ -34,7 +34,7 @@ func initGraphConfig(imgNamePrefix string) {
 	}
 }
 
-func getImagePath() string {
+func GetImagePath() string {
 	return config.GetPMLogDir() + mg.fileNoExt + ".svg"
 }
 
@@ -110,7 +110,7 @@ func InitGraph(pluginType string, pluginsInfo map[string]*pluginmanager.PluginAt
 // GenerateGraph generates an input `.dot` file based on the fileNoExt name,
 // and then generates an `.svg` image output file as fileNoExt.svg.
 func GenerateGraph(g *cgraph.Graph) error {
-	svgFile := getImagePath()
+	svgFile := GetImagePath()
 
 	rendererr := gv.RenderFilename(g, graphviz.SVG, svgFile)
 	if rendererr != nil {
@@ -153,7 +153,7 @@ func UpdateGraph(subgraphName, plugin, status, url string) error {
 	node.SetFillColor(getStatusColor(status))
 	node.SetURL(url)
 
-	svgFile := getImagePath()
+	svgFile := GetImagePath()
 
 	// var buf bytes.Buffer
 	// if err := gv.Render(graph1, "dot", &buf); err != nil {
