@@ -1,4 +1,4 @@
-module github.com/abhijithda/pm-graph
+module github.com/abhijithda/pm-graph/v2
 
 go 1.20
 
