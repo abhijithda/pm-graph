@@ -4,7 +4,7 @@ go 1.20
 
 require (
 	github.com/VeritasOS/plugin-manager v1.0.3
-	github.com/goccy/go-graphviz v0.1.0
+	github.com/goccy/go-graphviz v0.1.1
 )
 
 require (
